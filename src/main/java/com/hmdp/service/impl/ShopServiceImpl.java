@@ -121,12 +121,12 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 //
 //        }
 //
-//        //6.4.返回过期的商铺信息
+//        //6.4.返回过期的商铺信息//逻辑过期方法解决缓存击穿
 //        return shop;
 //
 //    }
     /**
-     * 互斥锁解决缓存穿透
+     * 互斥锁解决缓存击穿
      * @param id
      * @return
      * @throws InterruptedException
