@@ -30,7 +30,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-import static com.hmdp.utils.RedisConstants.USER_SIGN_KEY;
 
 /**
  * <p>
@@ -63,7 +62,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //3.符合，生成验证码
         String code = RandomUtil.randomNumbers(6);
         //4.保存验证码到redis
-       stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY +phone,code,2, TimeUnit.MINUTES);
+        stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY +phone,code,RedisConstants.LOGIN_CODE_TTL, TimeUnit.MINUTES);
         //5.发送验证码
         log.info("短信验证码发送成功：{}",code);
 
@@ -97,9 +96,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         User user = query().eq("phone",phone).one();
 
         //5.判断用户是否存在
-
-        //6.不存在，创建新用户，保存到数据库
         if(user==null){
+            //6.不存在，创建新用户，保存到数据库
            user=createUserWithPhone(phone);
         }
         //7.存在 保存到redis
@@ -114,7 +112,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         //7.3 存储
         String tokenKey=RedisConstants.LOGIN_USER_KEY+token;
         stringRedisTemplate.opsForHash().putAll(tokenKey,map);
-        stringRedisTemplate.expire(tokenKey,30,TimeUnit.MINUTES);
+        stringRedisTemplate.expire(tokenKey,RedisConstants.LOGIN_USER_TTL,TimeUnit.MINUTES);
         //8.返回token
         return Result.ok(token);
     }
@@ -127,7 +125,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         LocalDateTime now = LocalDateTime.now();
         //3.拼接key
         String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
-        String key = USER_SIGN_KEY + userId + keySuffix;
+        String key = RedisConstants.USER_SIGN_KEY + userId + keySuffix;
         //4.获取今天是这个月的第几天
         int dayOfMonth = now.getDayOfMonth();
         //5.写入redis setbit key offset 1
@@ -143,7 +141,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         LocalDateTime now = LocalDateTime.now();
         //3.拼接key
         String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
-        String key = USER_SIGN_KEY + userId + keySuffix;
+        String key = RedisConstants.USER_SIGN_KEY + userId + keySuffix;
         //4.获取今天是这个月的第几天
         int dayOfMonth = now.getDayOfMonth();
         //5.获取本月截止今天为止所有的签到记录，返回的是一个十进制的数字
