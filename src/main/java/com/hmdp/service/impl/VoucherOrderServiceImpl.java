@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.dto.Result;
+import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
@@ -30,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -200,72 +202,120 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
         }
     private IVoucherOrderService proxy;
-    @Override
-    public Result seckillVoucher(Long voucherId) {
-        //获取用户id
-        Long userId = UserHolder.getUser().getId();
-        //获取订单id
-        long orderId = redisIdWorker.nextId("order");
-        //1.执行lua脚本
-        Long result = stringRedisTemplate.execute(
-                SECKILL_SCRIPT,
-                Collections.emptyList(),
-                voucherId.toString(), userId.toString(),String.valueOf(orderId)
-        );
-        //2.判断结果是否为0
-        int r = 0;
-        if (result != null) {
-            r = result.intValue();
-        }
-        if(r!=0){
-            //2.1.不为0，代表没有购买资格
-            return Result.fail(r==1?"库存不足":"不能重复下单");
-        }
-//        //3.获取代理对象
-//        proxy = (IVoucherOrderService) AopContext.currentProxy();
-//        //4.返回订单id
-//        return Result.ok(orderId);
-        // 2. 脱离请求线程，发消息给 RabbitMQ
-        VoucherOrder order = new VoucherOrder();
-        order.setId(orderId);
-        order.setUserId(userId);
-        order.setVoucherId(voucherId);
-        // 你可以用 JSON，也可以用序列化
-        // 增加消息发送的异常处理
-        //放入mq
-        String jsonStr = JSONUtil.toJsonStr(order);
-        try {
-//            rabbitTemplate.convertAndSend("X","XA",jsonStr );
-        } catch (Exception e) {
-            log.error("发送 RabbitMQ 消息失败，订单ID: {}", orderId, e);
-            throw new RuntimeException("发送消息失败");
-        }
-        // 3. 返回订单号给前端（实际下单异步处理）
-        return Result.ok(orderId);
-    }
-
-
+//    @Override
 //    public Result seckillVoucher(Long voucherId) {
-//        //查询用户券信息
-//        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-//        //判断秒杀时间
-//        //是否开始
-//        LocalDateTime beginTime = voucher.getBeginTime();
-//        if(beginTime.isAfter(LocalDateTime.now())){
-//            return Result.fail("秒杀尚未开始！");
+//        //获取用户id
+//        Long userId = UserHolder.getUser().getId();
+//        //获取订单id
+//        long orderId = redisIdWorker.nextId("order");
+//        //1.执行lua脚本
+//        Long result = stringRedisTemplate.execute(
+//                SECKILL_SCRIPT,
+//                Collections.emptyList(),
+//                voucherId.toString(), userId.toString(),String.valueOf(orderId)
+//        );
+//        //2.判断结果是否为0
+//        int r = 0;
+//        if (result != null) {
+//            r = result.intValue();
 //        }
-//        //是否结束
-//        LocalDateTime endTime = voucher.getEndTime();
-//        if(endTime.isBefore(LocalDateTime.now())){
-//            return Result.fail("秒杀已经结束");
+//        if(r!=0){
+//            //2.1.不为0，代表没有购买资格
+//            return Result.fail(r==1?"库存不足":"不能重复下单");
 //        }
-//        //判断库存呢是否充足
-//        if(voucher.getStock()<=0){
-//            return Result.fail("库存不足！");
+////        //3.获取代理对象
+////        proxy = (IVoucherOrderService) AopContext.currentProxy();
+////        //4.返回订单id
+////        return Result.ok(orderId);
+//        // 2. 脱离请求线程，发消息给 RabbitMQ
+//        VoucherOrder order = new VoucherOrder();
+//        order.setId(orderId);
+//        order.setUserId(userId);
+//        order.setVoucherId(voucherId);
+//        // 你可以用 JSON，也可以用序列化
+//        // 增加消息发送的异常处理
+//        //放入mq
+//        String jsonStr = JSONUtil.toJsonStr(order);
+//        try {
+////            rabbitTemplate.convertAndSend("X","XA",jsonStr );
+//        } catch (Exception e) {
+//            log.error("发送 RabbitMQ 消息失败，订单ID: {}", orderId, e);
+//            throw new RuntimeException("发送消息失败");
 //        }
+//        // 3. 返回订单号给前端（实际下单异步处理）
+//        return Result.ok(orderId);
+//    }
+
+
+    //同步下单，分布式锁解决一人一单问题
+    @Override
+    @Transactional
+    public Result seckillVoucher(Long voucherId) {
+        //查询用户券信息
+        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+        //判断秒杀时间
+        //是否开始
+        LocalDateTime beginTime = voucher.getBeginTime();
+        if(beginTime.isAfter(LocalDateTime.now())){
+            return Result.fail("秒杀尚未开始！");
+        }
+        //是否结束
+        LocalDateTime endTime = voucher.getEndTime();
+        if(endTime.isBefore(LocalDateTime.now())){
+            return Result.fail("秒杀已经结束");
+        }
+        //判断库存呢是否充足
+        if(voucher.getStock()<=0){
+            return Result.fail("库存不足！");
+        }
+        Long userId = UserHolder.getUser().getId();
+
+        // ========== 新增1：分布式锁（核心！防止并发下一人多单） ==========
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        boolean isLock = lock.tryLock(); // 非阻塞获取锁
+        if(!isLock) {
+            return Result.fail("不允许重复下单，请稍后再试！");
+        }
+
+        try {
+            // ========== 新增2：一人一单校验（数据库层面） ==========
+            // 查询当前用户是否已买过该券
+            int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+            if (count > 0) {
+                return Result.fail("你已购买过该秒杀券，一人一单！");
+            }
+
+        // 扣减库存(乐观锁解决超卖问题)
+        boolean success = seckillVoucherService.update()
+                .setSql("stock = stock - 1")//set stock = stock - 1
+                .eq("voucher_id", voucherId).gt("stock", 0)//where id=? and stock>0
+                .update();
+        if (!success) {
+            // 扣减失败
+            return Result.fail("库存不足！");
+        }
+
+        // 创建订单
+        VoucherOrder voucherOrder = new VoucherOrder();
+        // 订单id
+        long orderId = redisIdWorker.nextId("order");
+        voucherOrder.setId(orderId);
+        // 用户id
+
+        voucherOrder.setUserId(userId);
+        // 代金券id
+        voucherOrder.setVoucherId(voucherId);
+        save(voucherOrder);
+
+        // 返回订单id
+        return Result.ok(orderId);
+        } finally {
+            // ========== 新增3：释放锁（必须！防止锁泄漏） ==========
+            lock.unlock();
+        }
 //        Long userId = UserHolder.getUser().getId();
 //       //创建锁对象
-//        //SimpleRedisLock  lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+////        SimpleRedisLock  lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
 //        RLock lock = redissonClient.getLock("lock:order:" + userId);
 //        //获取锁
 //        boolean isLock = lock.tryLock();
@@ -286,9 +336,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 //            //释放锁
 //            lock.unlock();
 //        }
-//
-//
-//    }
+
+
+    }
 
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {
